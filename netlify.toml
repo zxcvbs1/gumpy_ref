@@ -1,0 +1,14 @@
+[build]
+  command = "npm run build" # This will run "prisma generate && tsc"
+  functions = "netlify/functions" # Output directory for functions by tsc should align, or this points to source
+  publish = "public" # If you have any static site assets, not strictly needed for a bot-only deploy
+
+[dev] # Optional: for Netlify Dev local development
+  command = "npm run dev" # Or your local dev script
+  functions = "netlify/functions" # Source directory for functions
+
+[[redirects]]
+  from = "/api/bot"
+  to = "/.netlify/functions/telegram-bot"
+  status = 200 # Use 200 for a webhook, as it's a POST target, not a browser redirect
+  force = true # Ensures this rule is applied
