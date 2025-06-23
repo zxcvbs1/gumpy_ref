@@ -30,5 +30,9 @@ model User {
   // List of users that this current user has referred
   referralsGiven User[] @relation("UserReferrals")
 
+  // For message deletion feature
+  lastBotMessageIdInPrivateChat Int?     @map("last_bot_message_id_in_private_chat")
+  lastBotMessageContext         String?  @map("last_bot_message_context") // e.g., "welcome", "referral_link", "admin_reply"
+
   @@map("users")
 }
