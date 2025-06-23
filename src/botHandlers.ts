@@ -1,5 +1,5 @@
 import { Telegraf } from 'telegraf';
-import { Update } from 'telegraf/typings/core/types/typegram';
+import { Update, User as TelegramUser } from 'telegraf/typings/core/types/typegram'; // Aliasing to avoid conflict with PrismaUser
 import { User as PrismaUser, PrismaClient, Prisma } from '@prisma/client'; // Import Prisma
 import { MyContext } from './types'; // We'll define MyContext in a separate types file for shared use
 import { findOrCreateUserAndHandleReferral } from './services/userService';
@@ -328,19 +328,24 @@ export function setupTextHandler(bot: Telegraf<MyContext>) {
         if (
           repliedToMessage && // Ensure repliedToMessage itself is not undefined
           'from' in repliedToMessage && repliedToMessage.from?.id === ctx.botInfo?.id &&
-          'forward_from' in repliedToMessage && repliedToMessage.forward_from && // Check existence with 'in', then truthiness for the object
-          'forward_from_message_id' in repliedToMessage && repliedToMessage.forward_from_message_id // Check existence with 'in', then truthiness for the ID
+          'forward_from' in repliedToMessage && repliedToMessage.forward_from && // Check existence of the User object
+          'forward_from_message_id' in repliedToMessage && typeof repliedToMessage.forward_from_message_id === 'number' // Check existence and type of the message ID
         ) {
-          // TypeScript should now correctly infer that repliedToMessage has these properties
-          const originalSender = repliedToMessage.forward_from; // Info del usuario original
-          const originalMessageIdInUserChat = repliedToMessage.forward_from_message_id; // ID del mensaje original de Ana en su chat
+          // Explicitly type originalSender and originalMessageIdInUserChat
+          // Telegraf's User type is imported as TelegramUser.
+          // Assert the type of repliedToMessage.forward_from after checks.
+          const originalSender = repliedToMessage.forward_from as TelegramUser;
+          const originalMessageIdInUserChat: number = repliedToMessage.forward_from_message_id;
           const adminResponseText = text;
 
           try {
+            // originalSender.id is now guaranteed to be a number
+            // originalSender.username is string | undefined
+            // originalMessageIdInUserChat is now guaranteed to be a number
             await ctx.telegram.sendMessage(originalSender.id, `Respuesta del Administrador:\n\n${adminResponseText}`, {
-              reply_parameters: { message_id: originalMessageIdInUserChat } // Citar el mensaje original del usuario
+              reply_parameters: { message_id: originalMessageIdInUserChat }
             });
-            await ctx.reply(`Respuesta enviada a ${originalSender.username ? '@' + originalSender.username : 'ID: ' + originalSender.id} (citando su mensaje).`);
+            await ctx.reply(`Respuesta enviada a ${originalSender.username ? '@' + originalSender.username : 'ID: ' + String(originalSender.id)} (citando su mensaje).`);
             return; // Terminar el procesamiento aquí
           } catch (e: any) {
             console.error("Error al enviar respuesta del admin vía reply:", e);
