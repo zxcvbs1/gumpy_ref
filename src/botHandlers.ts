@@ -1,6 +1,6 @@
 import { Telegraf } from 'telegraf';
 import { Update } from 'telegraf/typings/core/types/typegram';
-import { User as PrismaUser, PrismaClient } from '@prisma/client'; // Assuming PrismaUser might be needed for type hints
+import { User as PrismaUser, PrismaClient, Prisma } from '@prisma/client'; // Import Prisma
 import { MyContext } from './types'; // We'll define MyContext in a separate types file for shared use
 import { findOrCreateUserAndHandleReferral } from './services/userService';
 
@@ -222,23 +222,30 @@ export function setupAdminViewReferralsHandler(bot: Telegraf<MyContext>) {
         return ctx.reply("Por favor, proporciona un ID de Usuario o @username. Uso: /admin_info_usuario <ID_o_@USERNAME>");
       }
       const targetIdentifier = textParts[1];
-      let targetUser: PrismaUser | null = null; // Explicitly type here
 
-      // PrismaUser with relations
-      type UserWithRelations = PrismaUser & {
-        referredBy?: PrismaUser | null;
-        referralsGiven?: PrismaUser[];
-      };
+      // Define a type for the user object with included relations using Prisma.UserGetPayload
+      type UserWithAdminInfoRelations = Prisma.UserGetPayload<{
+        include: {
+          referredBy: { select: { id: true, firstName: true, username: true } },
+          referralsGiven: {
+            select: { id: true, firstName: true, username: true, createdAt: true },
+            orderBy: { createdAt: 'asc' }
+          }
+        }
+      }>;
+
+      let targetUser: UserWithAdminInfoRelations | null = null;
 
       if (targetIdentifier.startsWith('@')) {
         const usernameToSearch = targetIdentifier.substring(1);
-        targetUser = await ctx.db.user.findUnique({ 
+        // Use findFirst for non-id unique fields if not explicitly in UserWhereUniqueInput for findUnique
+        targetUser = await ctx.db.user.findFirst({
           where: { username: usernameToSearch },
           include: { 
             referredBy: { select: { id: true, firstName: true, username: true }}, 
             referralsGiven: { select: { id: true, firstName: true, username: true, createdAt: true }, orderBy: { createdAt: 'asc' }}
           }
-        }) as UserWithRelations | null;
+        });
       } else {
         try {
           const potentialId = BigInt(targetIdentifier);
@@ -248,7 +255,7 @@ export function setupAdminViewReferralsHandler(bot: Telegraf<MyContext>) {
               referredBy: { select: { id: true, firstName: true, username: true }}, 
               referralsGiven: { select: { id: true, firstName: true, username: true, createdAt: true }, orderBy: { createdAt: 'asc' }}
             }
-          }) as UserWithRelations | null;
+          });
         } catch (e) {
             // Not a BigInt, could be a username without @
             targetUser = await ctx.db.user.findFirst({ 
@@ -257,7 +264,7 @@ export function setupAdminViewReferralsHandler(bot: Telegraf<MyContext>) {
                 referredBy: { select: { id: true, firstName: true, username: true }}, 
                 referralsGiven: { select: { id: true, firstName: true, username: true, createdAt: true }, orderBy: { createdAt: 'asc' }}
               }
-            }) as UserWithRelations | null;
+            });
         }
       }
 
@@ -318,14 +325,20 @@ export function setupTextHandler(bot: Telegraf<MyContext>) {
       if (ctx.adminUserId && fromUser.id === ctx.adminUserId && ctx.message.reply_to_message) {
         const repliedToMessage = ctx.message.reply_to_message;
         // Chequear si el mensaje al que se responde fue enviado por ESTE bot Y si es un mensaje que fue reenviado DE otro usuario
-        if (repliedToMessage.from?.id === ctx.botInfo?.id && repliedToMessage.forward_from && repliedToMessage.forward_from_message_id) {
+        if (
+          repliedToMessage && // Ensure repliedToMessage itself is not undefined
+          'from' in repliedToMessage && repliedToMessage.from?.id === ctx.botInfo?.id &&
+          'forward_from' in repliedToMessage && repliedToMessage.forward_from && // Check existence with 'in', then truthiness for the object
+          'forward_from_message_id' in repliedToMessage && repliedToMessage.forward_from_message_id // Check existence with 'in', then truthiness for the ID
+        ) {
+          // TypeScript should now correctly infer that repliedToMessage has these properties
           const originalSender = repliedToMessage.forward_from; // Info del usuario original
           const originalMessageIdInUserChat = repliedToMessage.forward_from_message_id; // ID del mensaje original de Ana en su chat
           const adminResponseText = text;
 
           try {
             await ctx.telegram.sendMessage(originalSender.id, `Respuesta del Administrador:\n\n${adminResponseText}`, {
-              reply_to_message_id: originalMessageIdInUserChat // Citar el mensaje original del usuario
+              reply_parameters: { message_id: originalMessageIdInUserChat } // Citar el mensaje original del usuario
             });
             await ctx.reply(`Respuesta enviada a ${originalSender.username ? '@' + originalSender.username : 'ID: ' + originalSender.id} (citando su mensaje).`);
             return; // Terminar el procesamiento aquí
