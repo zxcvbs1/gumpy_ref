@@ -282,8 +282,12 @@ export function setupAdminViewReferralsHandler(bot: Telegraf<MyContext>) {
                 select: {
                   id: true,
                   firstName: true,
-                  username:
-                    { select: { id: true, firstName: true, username: true } } // Max depth or handle dynamically
+                  username: true, // Corrected: scalar field selection
+                  // To select further down the chain, ensure the relation exists and is selected correctly.
+                  // If 'referredBy' itself has a 'referredBy', it would be:
+                  // referredBy: { select: { id: true, username: true, referredBy: { select: { ... } } } }
+                  // For this specific case, we are selecting the username of the second-level referrer.
+                  // The original attempt was trying to select 'username' as if it's a relation.
                 }
               }
             }
@@ -349,6 +353,13 @@ export function setupAdminViewReferralsHandler(bot: Telegraf<MyContext>) {
       while (currentUserInChain.referredById && depth < MAX_DEPTH) {
         const referrer = await ctx.db.user.findUnique({
           where: { id: currentUserInChain.referredById },
+          include: {
+            referredBy: true, // Include to match the shape of currentUserInChain
+            referralsGiven: { // Include to match the shape of currentUserInChain
+              select: { id: true, firstName: true, username: true, createdAt: true },
+              orderBy: { createdAt: 'asc' }
+            }
+          }
         });
 
         if (referrer) {
