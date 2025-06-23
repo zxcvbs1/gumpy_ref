@@ -29,6 +29,32 @@ if (isNaN(adminUserId)) {
 
 // Crear instancia del bot (también fuera del handler para reutilización)
 const bot = new Telegraf<MyContext>(botToken);
+let isBotInitialized = false; // Flag to send startup message only once per warm instance
+
+// Function to send startup notification to admin
+const sendStartupNotification = async () => {
+  if (!isBotInitialized && adminUserId) {
+    try {
+      // Fetch bot info if not already available (it should be by the time middleware runs, but as a fallback)
+      const botInfo = bot.botInfo || await bot.telegram.getMe();
+      const adminChat = await bot.telegram.getChat(adminUserId).catch(e => {
+        console.error(`Error fetching admin chat for startup message (ID: ${adminUserId}):`, e.message);
+        return null;
+      });
+
+      const adminName = adminChat?.first_name || adminChat?.username || `Admin (ID: ${adminUserId})`;
+
+      const startupMessage = `¡Hola ${adminName}! 👋\n\nEl bot de referidos (@${botInfo.username}) se ha iniciado correctamente y tú estás configurado/a como administrador/a.\n\n¡Estoy listo para trabajar!`;
+
+      await bot.telegram.sendMessage(adminUserId, startupMessage);
+      console.log(`Startup notification sent to admin ${adminUserId}.`);
+      isBotInitialized = true; // Set flag to true after sending
+    } catch (error: any) {
+      console.error('Error sending startup notification to admin:', error.message);
+      // Do not re-throw, allow bot to continue operating
+    }
+  }
+};
 
 // --- Configurar Middlewares ---
 bot.use(async (ctx, next) => {
@@ -38,10 +64,16 @@ bot.use(async (ctx, next) => {
   // ctx.botInfo es poblado por Telegraf. Si se necesita explícitamente antes:
   if (!ctx.botInfo) {
       try {
-        ctx.botInfo = await ctx.telegram.getMe();
+        ctx.botInfo = await ctx.telegram.getMe(); // Ensures botInfo is available
+        bot.botInfo = ctx.botInfo; // Also store it on the bot instance for sendStartupNotification
       } catch (e) {
         console.error("Netlify: No se pudo obtener botInfo (getMe):", e);
       }
+  }
+  // Attempt to send startup notification after basic context is set up
+  // This will run on the first event processed by a warm instance
+  if (!isBotInitialized) {
+    await sendStartupNotification();
   }
   return next();
 });

@@ -62,7 +62,27 @@ export function setupStartHandler(bot: Telegraf<MyContext>) {
       if (user.role === 'ADMIN') {
         message += "\nLos comandos de administrador están disponibles para ti.";
       }
-      await ctx.reply(message);
+
+      // Auto-delete previous message if applicable
+      const messageContext = "welcome";
+      if (process.env.MESSAGE_AUTO_DELETE_ENABLED === 'true' && user.lastBotMessageIdInPrivateChat && user.lastBotMessageContext === messageContext) {
+        try {
+          await ctx.telegram.deleteMessage(Number(user.id), user.lastBotMessageIdInPrivateChat);
+        } catch (e:any) {
+          if (e.response?.error_code !== 400) { // Ignore "message to delete not found"
+             console.warn(`Could not delete previous message ${user.lastBotMessageIdInPrivateChat} for user ${user.id}: ${e.message}`);
+          }
+        }
+      }
+
+      const sentMessage = await ctx.reply(message);
+      await ctx.db.user.update({
+        where: { id: user.id },
+        data: {
+          lastBotMessageIdInPrivateChat: sentMessage.message_id,
+          lastBotMessageContext: messageContext
+        },
+      });
 
     } catch (error) {
       console.error('Error en el manejador /start:', error);
@@ -101,7 +121,29 @@ export function setupReferHandler(bot: Telegraf<MyContext>) {
 
       // Mensaje reenviable
       const messageToForward = `¡Hola! 👋\n\nTe estoy invitando a unirte a ${communityName}. ¡Creo que te podría interesar!\n\nUsa mi enlace personal para empezar:\n🔗 ${referralLink}\n\n¡Espero verte por allí! 😉`;
-      await ctx.reply(messageToForward);
+
+      const messageContext = "referral_link";
+      // Auto-delete previous message if applicable
+      if (process.env.MESSAGE_AUTO_DELETE_ENABLED === 'true' && user.lastBotMessageIdInPrivateChat && user.lastBotMessageContext === messageContext) {
+        try {
+          // We are in the user's private chat with the bot here.
+          await ctx.telegram.deleteMessage(ctx.chat.id, user.lastBotMessageIdInPrivateChat);
+        } catch (e:any) {
+           if (e.response?.error_code !== 400) { // Ignore "message to delete not found"
+            console.warn(`Could not delete previous referral link message ${user.lastBotMessageIdInPrivateChat} for user ${user.id}: ${e.message}`);
+           }
+        }
+      }
+
+      const sentMessage = await ctx.reply(messageToForward);
+      // Store the new message_id
+      await ctx.db.user.update({
+        where: { id: user.id },
+        data: {
+          lastBotMessageIdInPrivateChat: sentMessage.message_id,
+          lastBotMessageContext: messageContext
+        },
+      });
 
     } catch (error) {
       console.error('Error en el manejador /invitar:', error);
@@ -168,8 +210,8 @@ const adminOnly = async (ctx: MyContext, next: () => Promise<void>) => {
 
 
 export function setupAdminViewUsersHandler(bot: Telegraf<MyContext>) { 
-  bot.command(['admin_view_users', 'admin_ver_usuarios'], adminOnly, async (ctx) => {
-    // Logic from src/index.ts for bot.command('admin_view_users')
+  // Primary: /usuarios, Alias: /ver_usuarios, Legacy: /admin_view_users, /admin_ver_usuarios
+  bot.command(['usuarios', 'ver_usuarios', 'admin_view_users', 'admin_ver_usuarios'], adminOnly, async (ctx) => {
     try {
       const users = await ctx.db.user.findMany({
         orderBy: { createdAt: 'asc' },
@@ -212,21 +254,40 @@ export function setupAdminViewUsersHandler(bot: Telegraf<MyContext>) {
   });
 }
 
-export function setupAdminViewReferralsHandler(bot: Telegraf<MyContext>) { 
-  bot.command(['admin_view_referrals', 'admin_info_usuario'], adminOnly, async (ctx) => {
-    // Logic from src/index.ts for bot.command('admin_view_referrals')
-    // This will also incorporate the new command name 'admin_info_usuario'
+// Helper function to get user display name
+const getUserDisplayName = (user: { firstName?: string | null; username?: string | null; id: bigint }): string => {
+  return user.firstName || user.username || `ID ${user.id.toString()}`;
+};
+
+export function setupAdminViewReferralsHandler(bot: Telegraf<MyContext>) {
+  // Primary: /info_usuario, Alias: /ver_referidos, Legacy: /admin_info_usuario, /admin_view_referrals
+  bot.command(['info_usuario', 'ver_referidos', 'admin_info_usuario', 'admin_view_referrals'], adminOnly, async (ctx) => {
     try {
       const textParts = ctx.message.text.split(' ');
       if (textParts.length < 2) {
-        return ctx.reply("Por favor, proporciona un ID de Usuario o @username. Uso: /admin_info_usuario <ID_o_@USERNAME>");
+        // Ensure usage message uses the primary command
+        return ctx.reply("Por favor, proporciona un ID de Usuario o @username. Uso: /info_usuario <ID_o_@USERNAME>");
       }
       const targetIdentifier = textParts[1];
 
-      // Define a type for the user object with included relations using Prisma.UserGetPayload
-      type UserWithAdminInfoRelations = Prisma.UserGetPayload<{
+      type UserWithReferrer = Prisma.UserGetPayload<{
         include: {
-          referredBy: { select: { id: true, firstName: true, username: true } },
+          referredBy: {
+            select: {
+              id: true,
+              firstName: true,
+              username: true,
+              // Include referredBy for recursive fetching
+              referredBy: {
+                select: {
+                  id: true,
+                  firstName: true,
+                  username:
+                    { select: { id: true, firstName: true, username: true } } // Max depth or handle dynamically
+                }
+              }
+            }
+          },
           referralsGiven: {
             select: { id: true, firstName: true, username: true, createdAt: true },
             orderBy: { createdAt: 'asc' }
@@ -234,37 +295,23 @@ export function setupAdminViewReferralsHandler(bot: Telegraf<MyContext>) {
         }
       }>;
 
-      let targetUser: UserWithAdminInfoRelations | null = null;
+      let targetUser: PrismaUser | null = null;
 
       if (targetIdentifier.startsWith('@')) {
         const usernameToSearch = targetIdentifier.substring(1);
-        // Use findFirst for non-id unique fields if not explicitly in UserWhereUniqueInput for findUnique
         targetUser = await ctx.db.user.findFirst({
-          where: { username: usernameToSearch },
-          include: { 
-            referredBy: { select: { id: true, firstName: true, username: true }}, 
-            referralsGiven: { select: { id: true, firstName: true, username: true, createdAt: true }, orderBy: { createdAt: 'asc' }}
-          }
+          where: { username: usernameToSearch }
         });
       } else {
         try {
           const potentialId = BigInt(targetIdentifier);
-          targetUser = await ctx.db.user.findUnique({ 
-            where: { id: potentialId },
-            include: { 
-              referredBy: { select: { id: true, firstName: true, username: true }}, 
-              referralsGiven: { select: { id: true, firstName: true, username: true, createdAt: true }, orderBy: { createdAt: 'asc' }}
-            }
+          targetUser = await ctx.db.user.findUnique({
+            where: { id: potentialId }
           });
         } catch (e) {
-            // Not a BigInt, could be a username without @
-            targetUser = await ctx.db.user.findFirst({ 
-              where: { username: targetIdentifier }, // Search by username if not starting with @ and not a valid BigInt
-              include: { 
-                referredBy: { select: { id: true, firstName: true, username: true }}, 
-                referralsGiven: { select: { id: true, firstName: true, username: true, createdAt: true }, orderBy: { createdAt: 'asc' }}
-              }
-            });
+          targetUser = await ctx.db.user.findFirst({
+            where: { username: targetIdentifier }
+          });
         }
       }
 
@@ -272,24 +319,67 @@ export function setupAdminViewReferralsHandler(bot: Telegraf<MyContext>) {
         return ctx.reply(`Usuario "${targetIdentifier}" no encontrado.`);
       }
 
-      const userNameDisplay = targetUser.firstName || targetUser.username || 'Usuario';
-      const userUsernameInfo = targetUser.username ? `@${targetUser.username}` : 'N/A';
-      let message = `Detalles del usuario: ${userNameDisplay} (ID: ${targetUser.id.toString()}, Username: ${userUsernameInfo}):\n\n`;
+      // Fetch the full user details with referralsGiven and the first referrer
+      const fullTargetUser = await ctx.db.user.findUnique({
+        where: { id: targetUser.id },
+        include: {
+          referredBy: true, // Fetch the direct referrer
+          referralsGiven: {
+            select: { id: true, firstName: true, username: true, createdAt: true },
+            orderBy: { createdAt: 'asc' }
+          }
+        }
+      });
+
+      if (!fullTargetUser) { // Should not happen if targetUser was found, but good practice
+        return ctx.reply(`Usuario "${targetIdentifier}" no encontrado (error secundario).`);
+      }
       
-      if (targetUser.referredBy) {
-        const referrerName = targetUser.referredBy.firstName || targetUser.referredBy.username || 'Usuario';
-        const referrerUsername = targetUser.referredBy.username ? `@${targetUser.referredBy.username}` : 'N/A';
-        message += `Invitado por: ${referrerName} (ID: ${targetUser.referredBy.id.toString()}, Username: ${referrerUsername})\n`;
+      const userNameDisplay = getUserDisplayName(fullTargetUser);
+      const userUsernameInfo = fullTargetUser.username ? `@${fullTargetUser.username}` : 'N/A';
+      let message = `Detalles del usuario: ${userNameDisplay} (ID: ${fullTargetUser.id.toString()}, Username: ${userUsernameInfo})\n\n`;
+
+      // Build referral chain
+      let referralChainString = "";
+      let currentUserInChain = fullTargetUser;
+      const chainParts: string[] = [];
+      let depth = 0;
+      const MAX_DEPTH = 10; // Safety break for very long or circular chains
+
+      while (currentUserInChain.referredById && depth < MAX_DEPTH) {
+        const referrer = await ctx.db.user.findUnique({
+          where: { id: currentUserInChain.referredById },
+        });
+
+        if (referrer) {
+          if (chainParts.length === 0) { // First link in chain
+            chainParts.push(`${getUserDisplayName(currentUserInChain)} fue invitado/a por ${getUserDisplayName(referrer)}`);
+          } else {
+            chainParts.push(`quien fue invitado/a por ${getUserDisplayName(referrer)}`);
+          }
+          currentUserInChain = referrer;
+        } else {
+          // Referrer not found, break chain
+          chainParts.push(`quien fue invitado/a por un usuario desconocido (ID: ${currentUserInChain.referredById})`);
+          break;
+        }
+        depth++;
+      }
+      if (depth === MAX_DEPTH) {
+        chainParts.push("... (cadena de referidos muy larga)");
+      }
+
+      if (chainParts.length > 0) {
+        referralChainString = chainParts.join(", ");
+        message += `Cadena de Referidos: ${referralChainString}.\n`;
       } else {
-        message += "Invitado por: Nadie\n";
+        message += "Invitado por: Nadie (o es el inicio de una cadena).\n";
       }
 
       message += "\nUsuarios que ha invitado:\n";
-      if (targetUser.referralsGiven && targetUser.referralsGiven.length > 0) {
-        targetUser.referralsGiven.forEach(referred => {
-          const name = referred.firstName || referred.username || 'Usuario';
-          const referredUsername = referred.username ? `@${referred.username}` : 'N/A';
-          message += `- ${name} (ID: ${referred.id.toString()}, Username: ${referredUsername}, Se unió: ${referred.createdAt.toLocaleDateString()})\n`;
+      if (fullTargetUser.referralsGiven && fullTargetUser.referralsGiven.length > 0) {
+        fullTargetUser.referralsGiven.forEach(referred => {
+          message += `- ${getUserDisplayName(referred)} (ID: ${referred.id.toString()}, Username: ${referred.username ? '@'+referred.username : 'N/A'}, Se unió: ${referred.createdAt.toLocaleDateString()})\n`;
         });
       } else {
         message += "- Ninguno\n";
@@ -298,7 +388,7 @@ export function setupAdminViewReferralsHandler(bot: Telegraf<MyContext>) {
       await ctx.reply(message);
 
     } catch (error) {
-      console.error('Error en /admin_info_usuario:', error);
+      console.error('Error en /info_usuario:', error);
       if (error instanceof TypeError && error.message.includes("Cannot convert")) {
          await ctx.reply("Formato de ID inválido. Por favor, proporciona un ID numérico o un @username.");
       } else {
@@ -450,7 +540,27 @@ export function setupNewAdminResponderCommand(bot: Telegraf<MyContext>) {
         return ctx.reply(`No se encontró al usuario "${targetIdentifier}". Verifica el ID o username (prueba con @ si es username).`);
       }
 
-      await ctx.telegram.sendMessage(Number(targetUser.id), `Respuesta del Administrador:\n\n${messageToUser}`);
+      const messageContext = "admin_reply";
+      // Auto-delete previous admin_reply if feature enabled
+      // Note: This deletes the *previous admin reply* to this user, not the user's message.
+      if (process.env.MESSAGE_AUTO_DELETE_ENABLED === 'true' && targetUser.lastBotMessageIdInPrivateChat && targetUser.lastBotMessageContext === messageContext) {
+        try {
+          await ctx.telegram.deleteMessage(Number(targetUser.id), targetUser.lastBotMessageIdInPrivateChat);
+        } catch (e:any) {
+          if (e.response?.error_code !== 400) {
+            console.warn(`Could not delete previous admin reply ${targetUser.lastBotMessageIdInPrivateChat} for user ${targetUser.id}: ${e.message}`);
+          }
+        }
+      }
+
+      const sentMessage = await ctx.telegram.sendMessage(Number(targetUser.id), `Respuesta del Administrador:\n\n${messageToUser}`);
+      await ctx.db.user.update({
+        where: { id: targetUser.id },
+        data: {
+          lastBotMessageIdInPrivateChat: sentMessage.message_id,
+          lastBotMessageContext: messageContext,
+        }
+      });
       await ctx.reply(`Tu mensaje ha sido enviado a ${targetUser.username ? '@'+targetUser.username : targetUser.id.toString()}.`);
 
     } catch (error: any) {
@@ -475,7 +585,79 @@ export function registerAllHandlers(bot: Telegraf<MyContext>) {
   setupAdminViewUsersHandler(bot); // Includes 'admin_ver_usuarios'
   setupAdminViewReferralsHandler(bot); // Includes 'admin_info_usuario'
   setupNewAdminResponderCommand(bot); // El nuevo /responder
+  setupAdminDeleteLastBotMessageHandler(bot); // New command
   setupTextHandler(bot); // Este debe ir al final o tener cuidado con el orden de `on('text')` vs `command`
+}
+
+
+export function setupAdminDeleteLastBotMessageHandler(bot: Telegraf<MyContext>) {
+  // Primary: /borrar_mensaje_bot (kept this one as it's specific enough)
+  // Aliases: /borrar_ultimo_mensaje_bot, /admin_borrar_ultimo_mensaje
+  bot.command(['borrar_mensaje_bot', 'borrar_ultimo_mensaje_bot', 'admin_borrar_ultimo_mensaje'], adminOnly, async (ctx) => {
+    try {
+      const textParts = ctx.message.text.split(' ');
+      if (textParts.length < 2) {
+        // Ensure usage message uses the primary command
+        return ctx.reply("Por favor, proporciona un ID de Usuario o @username. Uso: /borrar_mensaje_bot <ID_o_@USERNAME>");
+      }
+      const targetIdentifier = textParts[1];
+
+      let targetUser: PrismaUser | null = null;
+
+      if (targetIdentifier.startsWith('@')) {
+        const usernameToSearch = targetIdentifier.substring(1);
+        targetUser = await ctx.db.user.findFirst({ where: { username: usernameToSearch } });
+      } else {
+        try {
+          const potentialId = BigInt(targetIdentifier);
+          targetUser = await ctx.db.user.findUnique({ where: { id: potentialId } });
+        } catch (e) {
+          targetUser = await ctx.db.user.findFirst({ where: { username: targetIdentifier } });
+        }
+      }
+
+      if (!targetUser) {
+        return ctx.reply(`Usuario "${targetIdentifier}" no encontrado.`);
+      }
+
+      if (!targetUser.lastBotMessageIdInPrivateChat) {
+        return ctx.reply(`No hay registro del último mensaje enviado por el bot a ${getUserDisplayName(targetUser)}.`);
+      }
+
+      try {
+        await ctx.telegram.deleteMessage(Number(targetUser.id), targetUser.lastBotMessageIdInPrivateChat);
+        await ctx.db.user.update({
+          where: { id: targetUser.id },
+          data: {
+            lastBotMessageIdInPrivateChat: null,
+            lastBotMessageContext: null,
+          },
+        });
+        await ctx.reply(`Último mensaje del bot enviado a ${getUserDisplayName(targetUser)} (ID: ${targetUser.lastBotMessageIdInPrivateChat}) ha sido borrado.`);
+      } catch (e: any) {
+        if (e.response?.error_code === 400 && e.response.description?.includes("message to delete not found")) {
+          await ctx.reply(`El mensaje (ID: ${targetUser.lastBotMessageIdInPrivateChat}) ya no existe o no pudo ser borrado. Se limpiará el registro.`);
+          await ctx.db.user.update({
+            where: { id: targetUser.id },
+            data: {
+              lastBotMessageIdInPrivateChat: null,
+              lastBotMessageContext: null,
+            },
+          });
+        } else {
+          console.error(`Error borrando mensaje ${targetUser.lastBotMessageIdInPrivateChat} para usuario ${targetUser.id}:`, e);
+          await ctx.reply(`Error al intentar borrar el mensaje: ${e.message}`);
+        }
+      }
+    } catch (error) {
+      console.error('Error en /borrar_ultimo_mensaje_bot:', error);
+      if (error instanceof TypeError && error.message.includes("Cannot convert")) {
+        await ctx.reply("Formato de ID inválido. Por favor, proporciona un ID numérico o un @username.");
+      } else {
+        await ctx.reply('Ocurrió un error procesando el comando.');
+      }
+    }
+  });
 }
 
 // Nota: La interfaz MyContext necesitará ser accesible globalmente,
