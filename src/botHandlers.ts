@@ -278,16 +278,11 @@ export function setupAdminViewReferralsHandler(bot: Telegraf<MyContext>) {
               firstName: true,
               username: true,
               // Include referredBy for recursive fetching
-              referredBy: {
+              referredBy: { // Select details of the referrer's referrer
                 select: {
                   id: true,
                   firstName: true,
-                  username: true, // Corrected: scalar field selection
-                  // To select further down the chain, ensure the relation exists and is selected correctly.
-                  // If 'referredBy' itself has a 'referredBy', it would be:
-                  // referredBy: { select: { id: true, username: true, referredBy: { select: { ... } } } }
-                  // For this specific case, we are selecting the username of the second-level referrer.
-                  // The original attempt was trying to select 'username' as if it's a relation.
+                  username: true // username of the second-level referrer
                 }
               }
             }
@@ -354,8 +349,8 @@ export function setupAdminViewReferralsHandler(bot: Telegraf<MyContext>) {
         const referrer = await ctx.db.user.findUnique({
           where: { id: currentUserInChain.referredById },
           include: {
-            referredBy: true, // Include to match the shape of currentUserInChain
-            referralsGiven: { // Include to match the shape of currentUserInChain
+            referredBy: true, // Fetch the next referrer in the chain
+            referralsGiven: { // Match the structure of currentUserInChain
               select: { id: true, firstName: true, username: true, createdAt: true },
               orderBy: { createdAt: 'asc' }
             }
