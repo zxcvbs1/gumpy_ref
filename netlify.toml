@@ -1,6 +1,6 @@
 [build]
   command = "npm run build" # This will run "prisma generate && tsc"
-  functions = "netlify/functions" # Output directory for functions by tsc should align, or this points to source
+  functions = "dist/netlify/functions" # Output directory for functions by tsc should align, or this points to source
   publish = "public" # If you have any static site assets, not strictly needed for a bot-only deploy
 
 [dev] # Optional: for Netlify Dev local development
