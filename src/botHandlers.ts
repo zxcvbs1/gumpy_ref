@@ -738,6 +738,20 @@ export function setupAdminCreateCustomInviteHandler(bot: Telegraf<MyContext>) {
           return ctx.reply(`El código "${code}" ya existe. Por favor, elige otro.`);
         }
 
+        // --- NUEVO: Crear admin si no existe ---
+        const adminUser = await ctx.db.user.findUnique({ where: { id: BigInt(adminUserId) } });
+        if (!adminUser) {
+          await ctx.db.user.create({
+            data: {
+              id: BigInt(adminUserId),
+              username: ctx.from.username || null,
+              firstName: ctx.from.first_name || null,
+              role: 'ADMIN',
+            }
+          });
+        }
+        // --- FIN NUEVO ---
+
         const newInvite = await ctx.db.customInvite.create({
           data: {
             code,
