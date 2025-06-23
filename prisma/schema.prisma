@@ -21,6 +21,31 @@ model User {
 
   lastBotMessageIdInPrivateChat Int?
   lastBotMessageContext         String?
+  lastBotMessageSentAt        DateTime? // Stores the timestamp of when the last relevant bot message was sent
+  usedCustomInviteCode        String?   // Stores the custom invite code string the user used, if any
+  customInvite                CustomInvite? @relation(fields: [usedCustomInviteCode], references: [code], onDelete: NoAction, onUpdate: NoAction, map: "user_used_custom_invite_code_fkey")
+
+  customInvitesCreated CustomInvite[] @relation("AdminCreatedInvites") // Invites created by this user (if admin)
 
   @@map("users")
+}
+
+model CustomInvite {
+  id          String   @id @default(cuid())
+  code        String   @unique // The custom code string
+  maxUses     Int?     // Optional: Maximum number of times this code can be used
+  currentUses Int      @default(0)
+  expiresAt   DateTime? // Optional: When this code expires
+  isEnabled   Boolean  @default(true) // To manually disable a code if needed
+
+  createdById BigInt   // Admin User ID who created this invite
+  createdBy   User     @relation("AdminCreatedInvites", fields: [createdById], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  usersUsing User[] // Users who signed up using this specific code
+
+  @@index([createdById])
+  @@map("custom_invites")
 }

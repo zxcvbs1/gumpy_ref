@@ -44,17 +44,30 @@ export function setupStartHandler(bot: Telegraf<MyContext>) {
 
       if (isNewUser) {
         message = `¡Hola, ${userNameForReply}! 👋 `;
-        if (referralApplied && referrer) {
-          const referrerName = referrer.firstName || referrer.username || 'otro usuario';
-          message += `Has sido invitado/a por ${referrerName}.`;
+        if (referralApplied) {
+          if (user.usedCustomInviteCode) {
+            message += `Te has unido usando el código de invitación especial: ${user.usedCustomInviteCode}.`;
+            // Optionally, if you want to still mention the admin who created the code:
+            // const referrerName = referrer?.firstName || referrer?.username || 'el administrador';
+            // message += ` (Código creado por ${referrerName}).`;
+          } else if (referrer) {
+            const referrerName = referrer.firstName || referrer.username || 'otro usuario';
+            message += `Has sido invitado/a por ${referrerName}.`;
+          } else {
+             message += "Te has registrado correctamente."; // Should not happen if referralApplied is true without a referrer
+          }
         } else {
           message += "Te has registrado correctamente.";
         }
       } else { // Existing user
         message = `¡Hola de nuevo, ${userNameForReply}! 👋`;
-        if (referralApplied && referrer) {
-          const referrerName = referrer.firstName || referrer.username || 'otro usuario';
-          message += `\nAhora has quedado registrado/a como invitado/a por ${referrerName}.`;
+        if (referralApplied) { // This case means an existing user just got associated with a referrer
+          if (user.usedCustomInviteCode) {
+             message += `\nHas sido vinculado/a al código de invitación especial: ${user.usedCustomInviteCode}.`;
+          } else if (referrer) {
+            const referrerName = referrer.firstName || referrer.username || 'otro usuario';
+            message += `\nAhora has quedado registrado/a como invitado/a por ${referrerName}.`;
+          }
         }
       }
       
@@ -65,12 +78,28 @@ export function setupStartHandler(bot: Telegraf<MyContext>) {
 
       // Auto-delete previous message if applicable
       const messageContext = "welcome";
-      if (process.env.MESSAGE_AUTO_DELETE_ENABLED === 'true' && user.lastBotMessageIdInPrivateChat && user.lastBotMessageContext === messageContext) {
-        try {
-          await ctx.telegram.deleteMessage(Number(user.id), user.lastBotMessageIdInPrivateChat);
-        } catch (e:any) {
-          if (e.response?.error_code !== 400) { // Ignore "message to delete not found"
-             console.warn(`Could not delete previous message ${user.lastBotMessageIdInPrivateChat} for user ${user.id}: ${e.message}`);
+      const MESSAGE_DELETE_TIMEOUT_SECONDS = 10800; // 3 hours
+
+      if (process.env.MESSAGE_AUTO_DELETE_ENABLED === 'true' &&
+          user.lastBotMessageIdInPrivateChat &&
+          user.lastBotMessageContext === messageContext) {
+
+        let shouldDelete = true; // Default to old behavior (delete if no timestamp)
+        if (user.lastBotMessageSentAt) {
+          const messageAgeSeconds = (new Date().getTime() - new Date(user.lastBotMessageSentAt).getTime()) / 1000;
+          if (messageAgeSeconds <= MESSAGE_DELETE_TIMEOUT_SECONDS) {
+            shouldDelete = false;
+            // console.log(`Message ${user.lastBotMessageIdInPrivateChat} for user ${user.id} is too new to delete. Age: ${messageAgeSeconds}s`);
+          }
+        }
+
+        if (shouldDelete) {
+          try {
+            await ctx.telegram.deleteMessage(Number(user.id), user.lastBotMessageIdInPrivateChat);
+          } catch (e:any) {
+            if (e.response?.error_code !== 400) { // Ignore "message to delete not found"
+               console.warn(`Could not delete previous message ${user.lastBotMessageIdInPrivateChat} for user ${user.id}: ${e.message}`);
+            }
           }
         }
       }
@@ -80,7 +109,8 @@ export function setupStartHandler(bot: Telegraf<MyContext>) {
         where: { id: user.id },
         data: {
           lastBotMessageIdInPrivateChat: sentMessage.message_id,
-          lastBotMessageContext: messageContext
+          lastBotMessageContext: messageContext,
+          lastBotMessageSentAt: new Date(sentMessage.date * 1000) // Telegram date is in seconds
         },
       });
 
@@ -123,15 +153,30 @@ export function setupReferHandler(bot: Telegraf<MyContext>) {
       const messageToForward = `¡Hola! 👋\n\nTe estoy invitando a unirte a ${communityName}. ¡Creo que te podría interesar!\n\nUsa mi enlace personal para empezar:\n🔗 ${referralLink}\n\n¡Espero verte por allí! 😉`;
 
       const messageContext = "referral_link";
+      const MESSAGE_DELETE_TIMEOUT_SECONDS = 10800; // 3 hours
+
       // Auto-delete previous message if applicable
-      if (process.env.MESSAGE_AUTO_DELETE_ENABLED === 'true' && user.lastBotMessageIdInPrivateChat && user.lastBotMessageContext === messageContext) {
-        try {
-          // We are in the user's private chat with the bot here.
-          await ctx.telegram.deleteMessage(ctx.chat.id, user.lastBotMessageIdInPrivateChat);
-        } catch (e:any) {
-           if (e.response?.error_code !== 400) { // Ignore "message to delete not found"
-            console.warn(`Could not delete previous referral link message ${user.lastBotMessageIdInPrivateChat} for user ${user.id}: ${e.message}`);
-           }
+      if (process.env.MESSAGE_AUTO_DELETE_ENABLED === 'true' &&
+          user.lastBotMessageIdInPrivateChat &&
+          user.lastBotMessageContext === messageContext) {
+
+        let shouldDelete = true; // Default to old behavior
+        if (user.lastBotMessageSentAt) {
+          const messageAgeSeconds = (new Date().getTime() - new Date(user.lastBotMessageSentAt).getTime()) / 1000;
+          if (messageAgeSeconds <= MESSAGE_DELETE_TIMEOUT_SECONDS) {
+            shouldDelete = false;
+          }
+        }
+
+        if (shouldDelete) {
+          try {
+            // We are in the user's private chat with the bot here.
+            await ctx.telegram.deleteMessage(ctx.chat.id, user.lastBotMessageIdInPrivateChat);
+          } catch (e:any) {
+             if (e.response?.error_code !== 400) { // Ignore "message to delete not found"
+              console.warn(`Could not delete previous referral link message ${user.lastBotMessageIdInPrivateChat} for user ${user.id}: ${e.message}`);
+             }
+          }
         }
       }
 
@@ -141,7 +186,8 @@ export function setupReferHandler(bot: Telegraf<MyContext>) {
         where: { id: user.id },
         data: {
           lastBotMessageIdInPrivateChat: sentMessage.message_id,
-          lastBotMessageContext: messageContext
+          lastBotMessageContext: messageContext,
+          lastBotMessageSentAt: new Date(sentMessage.date * 1000) // Telegram date is in seconds
         },
       });
 
@@ -336,9 +382,16 @@ export function setupAdminViewReferralsHandler(bot: Telegraf<MyContext>) {
       
       const userNameDisplay = getUserDisplayName(fullTargetUser);
       const userUsernameInfo = fullTargetUser.username ? `@${fullTargetUser.username}` : 'N/A';
-      let message = `Detalles del usuario: ${userNameDisplay} (ID: ${fullTargetUser.id.toString()}, Username: ${userUsernameInfo})\n\n`;
+      let message = `Detalles del usuario: ${userNameDisplay} (ID: ${fullTargetUser.id.toString()}, Username: ${userUsernameInfo})\n`;
+      message += `Rol: ${fullTargetUser.role}\n`;
+      message += `Registrado: ${fullTargetUser.createdAt.toLocaleDateString()}\n`;
+
+      if (fullTargetUser.usedCustomInviteCode) {
+        message += `Código de invitación usado: ${fullTargetUser.usedCustomInviteCode}\n`;
+      }
 
       // Build referral chain
+      message += "\n"; // Add a line break before referral chain info
       let referralChainString = "";
       let currentUserInChain = fullTargetUser;
       const chainParts: string[] = [];
@@ -549,12 +602,26 @@ export function setupNewAdminResponderCommand(bot: Telegraf<MyContext>) {
       const messageContext = "admin_reply";
       // Auto-delete previous admin_reply if feature enabled
       // Note: This deletes the *previous admin reply* to this user, not the user's message.
-      if (process.env.MESSAGE_AUTO_DELETE_ENABLED === 'true' && targetUser.lastBotMessageIdInPrivateChat && targetUser.lastBotMessageContext === messageContext) {
-        try {
-          await ctx.telegram.deleteMessage(Number(targetUser.id), targetUser.lastBotMessageIdInPrivateChat);
-        } catch (e:any) {
-          if (e.response?.error_code !== 400) {
-            console.warn(`Could not delete previous admin reply ${targetUser.lastBotMessageIdInPrivateChat} for user ${targetUser.id}: ${e.message}`);
+      const MESSAGE_DELETE_TIMEOUT_SECONDS = 10800; // 3 hours
+      if (process.env.MESSAGE_AUTO_DELETE_ENABLED === 'true' &&
+          targetUser.lastBotMessageIdInPrivateChat &&
+          targetUser.lastBotMessageContext === messageContext) {
+
+        let shouldDelete = true; // Default to old behavior
+        if (targetUser.lastBotMessageSentAt) {
+          const messageAgeSeconds = (new Date().getTime() - new Date(targetUser.lastBotMessageSentAt).getTime()) / 1000;
+          if (messageAgeSeconds <= MESSAGE_DELETE_TIMEOUT_SECONDS) {
+            shouldDelete = false;
+          }
+        }
+
+        if (shouldDelete) {
+          try {
+            await ctx.telegram.deleteMessage(Number(targetUser.id), targetUser.lastBotMessageIdInPrivateChat);
+          } catch (e:any) {
+            if (e.response?.error_code !== 400) {
+              console.warn(`Could not delete previous admin reply ${targetUser.lastBotMessageIdInPrivateChat} for user ${targetUser.id}: ${e.message}`);
+            }
           }
         }
       }
@@ -565,6 +632,7 @@ export function setupNewAdminResponderCommand(bot: Telegraf<MyContext>) {
         data: {
           lastBotMessageIdInPrivateChat: sentMessage.message_id,
           lastBotMessageContext: messageContext,
+          lastBotMessageSentAt: new Date(sentMessage.date * 1000) // Telegram date is in seconds
         }
       });
       await ctx.reply(`Tu mensaje ha sido enviado a ${targetUser.username ? '@'+targetUser.username : targetUser.id.toString()}.`);
@@ -592,9 +660,116 @@ export function registerAllHandlers(bot: Telegraf<MyContext>) {
   setupAdminViewReferralsHandler(bot); // Includes 'admin_info_usuario'
   setupNewAdminResponderCommand(bot); // El nuevo /responder
   setupAdminDeleteLastBotMessageHandler(bot); // New command
+  setupAdminCreateCustomInviteHandler(bot); // New command for custom invites
   setupHelpHandler(bot); // New help command
   setupTextHandler(bot); // Este debe ir al final o tener cuidado con el orden de `on('text')` vs `command`
 }
+
+// Helper function to parse duration strings like "7d", "24h", "1m" (1 month)
+function parseDuration(durationStr: string): Date | null {
+  if (!durationStr) return null;
+  const match = durationStr.match(/^(\d+)([dhm])$/i); // d=days, h=hours, m=months
+  if (!match) return null;
+
+  const amount = parseInt(match[1]);
+  const unit = match[2].toLowerCase();
+  const date = new Date();
+
+  switch (unit) {
+    case 'd':
+      date.setDate(date.getDate() + amount);
+      break;
+    case 'h':
+      date.setHours(date.getHours() + amount);
+      break;
+    case 'm':
+      date.setMonth(date.getMonth() + amount);
+      break;
+    default:
+      return null;
+  }
+  return date;
+}
+
+export function setupAdminCreateCustomInviteHandler(bot: Telegraf<MyContext>) {
+  bot.command('crear_codigo_invitacion', adminOnly, async (ctx) => {
+    try {
+      const args = ctx.message.text.split(' ').slice(1);
+      if (args.length === 0 || args.length > 3) {
+        return ctx.reply("Uso: /crear_codigo_invitacion <código> [usos_maximos] [duración]\n\nEjemplos:\n" +
+                         "/crear_codigo_invitacion evento_verano\n" +
+                         "/crear_codigo_invitacion oferta_limitada 100\n" +
+                         "/crear_codigo_invitacion promo_7_dias null 7d\n" +
+                         "/crear_codigo_invitacion especial_staff 50 30d");
+      }
+
+      const code = args[0];
+      const maxUsesInput = args.length > 1 ? args[1] : null;
+      const durationInput = args.length > 2 ? args[2] : null;
+
+      if (!code || code.length < 3 || code.length > 50 || /\s/.test(code)) {
+        return ctx.reply("El código debe tener entre 3 y 50 caracteres y no puede contener espacios.");
+      }
+
+      let maxUses: number | null = null;
+      if (maxUsesInput && maxUsesInput.toLowerCase() !== 'null' && maxUsesInput.toLowerCase() !== 'ilimitado') {
+        maxUses = parseInt(maxUsesInput, 10);
+        if (isNaN(maxUses) || maxUses <= 0) {
+          return ctx.reply("Los usos máximos deben ser un número positivo, o 'null'/'ilimitado' para no tener límite.");
+        }
+      }
+
+      let expiresAt: Date | null = null;
+      if (durationInput && durationInput.toLowerCase() !== 'null' && durationInput.toLowerCase() !== 'nunca') {
+        expiresAt = parseDuration(durationInput);
+        if (!expiresAt) {
+          return ctx.reply("Formato de duración inválido. Usa, por ejemplo, 7d (días), 24h (horas), 1m (meses), o 'null'/'nunca' para que no expire.");
+        }
+      }
+
+      const adminUserId = ctx.from?.id;
+      if (!adminUserId) {
+        return ctx.reply("No se pudo identificar al administrador para crear el código.");
+      }
+
+      try {
+        const existingCode = await ctx.db.customInvite.findUnique({ where: { code } });
+        if (existingCode) {
+          return ctx.reply(`El código "${code}" ya existe. Por favor, elige otro.`);
+        }
+
+        const newInvite = await ctx.db.customInvite.create({
+          data: {
+            code,
+            maxUses,
+            expiresAt,
+            createdById: BigInt(adminUserId),
+          },
+        });
+
+        let replyMessage = `✅ Código de invitación personalizado "${newInvite.code}" creado con éxito.\n`;
+        replyMessage += `Usos máximos: ${newInvite.maxUses === null ? 'Ilimitados' : newInvite.maxUses}.\n`;
+        replyMessage += `Expira: ${newInvite.expiresAt === null ? 'Nunca' : newInvite.expiresAt.toLocaleString()}.\n`;
+        replyMessage += `\nEnlace de invitación: https://t.me/${ctx.botUsername}?start=${newInvite.code}`;
+
+        await ctx.reply(replyMessage);
+
+      } catch (dbError: any) {
+        if (dbError instanceof Prisma.PrismaClientKnownRequestError && dbError.code === 'P2002') { // Unique constraint failed
+          await ctx.reply(`El código "${code}" ya existe. Por favor, elige otro.`);
+        } else {
+          console.error("Error al crear código de invitación personalizado:", dbError);
+          await ctx.reply("Ocurrió un error al crear el código de invitación en la base de datos.");
+        }
+      }
+
+    } catch (error) {
+      console.error('Error en /crear_codigo_invitacion:', error);
+      await ctx.reply('Ocurrió un error al procesar el comando.');
+    }
+  });
+}
+
 
 export function setupHelpHandler(bot: Telegraf<MyContext>) {
   bot.command(['ayuda', 'help'], async (ctx) => {
@@ -609,9 +784,10 @@ export function setupHelpHandler(bot: Telegraf<MyContext>) {
     if (ctx.from && ctx.adminUserId && BigInt(ctx.from.id) === BigInt(ctx.adminUserId)) {
       message += "\n👑 **Comandos de Administrador:**\n";
       message += "/usuarios - Muestra todos los usuarios registrados.\n";
-      message += "/info_usuario <ID o @username> - Muestra información detallada de un usuario, incluyendo su cadena de referidos completa.\n";
-      message += "/responder <ID o @username> <mensaje> - Envía un mensaje directo a un usuario desde el bot.\n";
-      message += "/borrar_mensaje_bot <ID o @username> - Intenta borrar el último mensaje relevante (bienvenida, enlace de invitación, respuesta de admin) enviado por el bot a un usuario.\n";
+      message += "/info_usuario <ID o @username> - Muestra información detallada de un usuario.\n";
+      message += "/responder <ID o @username> <mensaje> - Envía un mensaje directo a un usuario.\n";
+      message += "/borrar_mensaje_bot <ID o @username> - Intenta borrar el último mensaje del bot a un usuario.\n";
+      message += "/crear_codigo_invitacion <código> [usos_max] [duración] - Crea un código de invitación personalizado (ej: /crear_codigo_invitacion promo10 50 7d).\n";
     }
 
     try {
