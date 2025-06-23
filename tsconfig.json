@@ -6,10 +6,10 @@
     "strict": true,
     "skipLibCheck": true,
     "outDir": "./dist",
-    "rootDir": "./src",
+    "rootDir": "./",
     "resolveJsonModule": true,
     "moduleResolution": "node"
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "netlify/functions/**/*.ts"],
   "exclude": ["node_modules", "**/*.spec.ts", "dist"]
 }
