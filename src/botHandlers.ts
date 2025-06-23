@@ -586,9 +586,36 @@ export function registerAllHandlers(bot: Telegraf<MyContext>) {
   setupAdminViewReferralsHandler(bot); // Includes 'admin_info_usuario'
   setupNewAdminResponderCommand(bot); // El nuevo /responder
   setupAdminDeleteLastBotMessageHandler(bot); // New command
+  setupHelpHandler(bot); // New help command
   setupTextHandler(bot); // Este debe ir al final o tener cuidado con el orden de `on('text')` vs `command`
 }
 
+export function setupHelpHandler(bot: Telegraf<MyContext>) {
+  bot.command(['ayuda', 'help'], async (ctx) => {
+    let message = "👋 ¡Hola! Aquí tienes una lista de los comandos disponibles:\n\n";
+
+    message += "🤖 **Comandos para todos los usuarios:**\n";
+    message += "/start - Inicia el bot y te registra.\n";
+    message += "/invitar - Obtiene tu enlace personal de invitación.\n";
+    message += "/mis_invitados - Muestra los usuarios que has invitado directamente.\n";
+    message += "/ayuda - Muestra este mensaje de ayuda.\n";
+
+    if (ctx.from && ctx.adminUserId && BigInt(ctx.from.id) === BigInt(ctx.adminUserId)) {
+      message += "\n👑 **Comandos de Administrador:**\n";
+      message += "/usuarios - Muestra todos los usuarios registrados.\n";
+      message += "/info_usuario <ID o @username> - Muestra información detallada de un usuario, incluyendo su cadena de referidos completa.\n";
+      message += "/responder <ID o @username> <mensaje> - Envía un mensaje directo a un usuario desde el bot.\n";
+      message += "/borrar_mensaje_bot <ID o @username> - Intenta borrar el último mensaje relevante (bienvenida, enlace de invitación, respuesta de admin) enviado por el bot a un usuario.\n";
+    }
+
+    try {
+      await ctx.reply(message);
+    } catch (error) {
+      console.error("Error al enviar mensaje de ayuda:", error);
+      // Optionally, notify user if reply fails, though it's rare for /help itself.
+    }
+  });
+}
 
 export function setupAdminDeleteLastBotMessageHandler(bot: Telegraf<MyContext>) {
   // Primary: /borrar_mensaje_bot (kept this one as it's specific enough)
